@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0B1121">
+    <title>資産運用モンテカルロシミュレーション</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        app: {
+                            bg: '#0B1121',
+                            panel: '#172033',
+                            teal: '#4fd1c5',
+                            tealDark: '#319795',
+                            yellow: '#fbbf24', // 現金用
+                            blue: '#3b82f6',   // 元本用
+                            green: '#22c55e',  // 運用益用
+                            red: '#f87171',
+                            textMain: '#f1f5f9',
+                            textSub: '#94a3b8',
+                            border: '#2e3a51'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'Noto Sans JP', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- PropTypes -->
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    
+    <!-- Recharts -->
+    <script src="https://unpkg.com/recharts@2.1.9/umd/Recharts.js"></script>
+    
+    <style>
+        body { background-color: #0B1121; color: #f1f5f9; }
+        
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4fd1c5;
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 0 4px rgba(0,0,0,0.5);
+        }
+        input[type=range]:disabled::-webkit-slider-thumb {
+            background: #64748b;
+            cursor: not-allowed;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #334155;
+            border-radius: 2px;
+        }
+        input[type=range]:focus {
+            outline: none;
+        }
+        .slider-progress {
+            background: linear-gradient(to right, #4fd1c5 var(--value, 0%), #334155 var(--value, 0%));
+        }
+        .slider-progress:disabled {
+            background: linear-gradient(to right, #64748b var(--value, 0%), #334155 var(--value, 0%));
+        }
+        input[type="number"]::-webkit-outer-spin-button,
+        input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+        }
+
+        /* --- モバイル最適化 --- */
+        @media (max-width: 767px) {
+            /* iOSでinput focus時に自動ズームされるのを防ぐ */
+            input[type="number"], input[type="text"] {
+                font-size: 16px;
+            }
+            /* スライダーのつまみをタッチしやすい大きさに拡大 */
+            input[type=range]::-webkit-slider-thumb {
+                height: 24px;
+                width: 24px;
+                margin-top: -10px;
+            }
+            input[type=range]::-webkit-slider-runnable-track {
+                height: 5px;
+            }
+            input[type=range] {
+                padding: 10px 0; /* タップ判定領域を拡大 */
+                margin: -10px 0;
+            }
+        }
+        input[type=range]::-moz-range-thumb {
+            height: 16px;
+            width: 16px;
+            border: none;
+            border-radius: 50%;
+            background: #4fd1c5;
+            cursor: pointer;
+        }
+        @media (max-width: 767px) {
+            input[type=range]::-moz-range-thumb {
+                height: 24px;
+                width: 24px;
+            }
+        }
+
+        /* 実行ボタンをスマホでは画面上部に固定してどこからでも押せるように */
+        .run-btn-sticky {
+            position: sticky;
+            top: 0.5rem;
+            z-index: 30;
+        }
+
+        /* セーフエリア対応（ノッチ端末など） */
+        .safe-bottom {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #172033;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #2e3a51;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback } = React;
+        const { ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, Legend } = window.Recharts;
+
+        // --- ユーティリティ関数 ---
+        const randomNormal = (mean, stdDev) => {
+            let u = 0, v = 0;
+            while (u === 0) u = Math.random();
+            while (v === 0) v = Math.random();
+            const z = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+            return z * stdDev + mean;
+        };
+
+        const formatCurrency = (valueInManYen) => {
+            if (valueInManYen === 0) return '0万円';
+            const isNegative = valueInManYen < 0;
+            const absValue = Math.abs(valueInManYen);
+
+            if (absValue >= 10000) {
+                let oku = absValue / 10000;
+                oku = parseFloat(oku.toFixed(2));
+                return (isNegative ? '-' : '') + oku + '億円';
+            } else {
+                return (isNegative ? '-' : '') + Math.round(absValue).toLocaleString() + '万円';
+            }
+        };
+
+        // --- シミュレーションコアロジック ---
+        const withdrawNetFromPortfolio = (currentP, currentG, desiredNet, taxRate) => {
+            let p = currentP; let g = currentG;
+            let total = p + g;
+            let withdrawnNet = 0; let grossWithdrawn = 0;
+
+            if (total <= 0 || desiredNet <= 0) return { p, g, withdrawnNet, grossWithdrawn };
+
+            const profitRatio = (total > p) ? (g / total) : 0;
+            const requiredGross = desiredNet / (1 - profitRatio * taxRate);
+
+            if (total >= requiredGross) {
+                grossWithdrawn = requiredGross;
+                total -= requiredGross;
+                const gWithdrawal = requiredGross * profitRatio;
+                const pWithdrawal = requiredGross - gWithdrawal;
+                g -= gWithdrawal; p -= pWithdrawal;
+                withdrawnNet = desiredNet;
+                
+                if (g < 0) { p += g; g = 0; }
+                if (p < 0) p = 0;
+            } else {
+                grossWithdrawn = total;
+                withdrawnNet = total - (total * profitRatio * taxRate);
+                p = 0; g = 0;
+            }
+            return { p, g, withdrawnNet, grossWithdrawn };
+        };
+
+        const withdrawGrossFromPortfolio = (currentP, currentG, grossAmount, taxRate) => {
+            let p = currentP; let g = currentG;
+            let total = p + g;
+            let withdrawnNet = 0; let grossWithdrawn = 0;
+
+            if (total <= 0 || grossAmount <= 0) return { p, g, withdrawnNet, grossWithdrawn };
+
+            const actualGross = Math.min(total, grossAmount);
+            grossWithdrawn = actualGross;
+            const profitRatio = (total > p) ? (g / total) : 0;
+            withdrawnNet = actualGross * (1 - profitRatio * taxRate);
+
+            const gWithdrawal = actualGross * profitRatio;
+            const pWithdrawal = actualGross - gWithdrawal;
+            g -= gWithdrawal; p -= pWithdrawal;
+
+            if (g < 0) { p += g; g = 0; }
+            if (p < 0) p = 0;
+
+            return { p, g, withdrawnNet, grossWithdrawn };
+        };
+
+        const runSimulationPass = (params, isDeterministic = false) => {
+            let p = params.initialPrincipal;
+            let g = params.initialGains;
+            let cash = params.initialCash;
+            let currentExpense = params.annualExpenses;
+            
+            if (!params.useWithdrawalRule) {
+                p += cash;
+                cash = 0;
+            }
+            
+            let maxPortfolioValue = p + g;
+            let isCrashMode = false;
+
+            const path = [];
+            path.push({
+                year: 0, age: params.currentAge,
+                principal: p, gains: g, cash: cash,
+                totalAssets: p + g + cash
+            });
+
+            for (let i = 1; i <= params.years; i++) {
+                const age = params.currentAge + i;
+                let yearIncome = 0;
+                for (const inc of params.incomes) {
+                    if (age >= inc.startAge && age <= inc.endAge) {
+                        yearIncome += inc.amount;
+                    }
+                }
+
+                // 特別支出の計算 (指定年齢に達した場合、インフレを加味して算出)
+                const currentSpecialExpenseRaw = params.specialExpenses
+                    .filter(exp => exp.age === age)
+                    .reduce((sum, exp) => sum + exp.amount, 0);
+                const currentSpecialExpense = currentSpecialExpenseRaw * Math.pow(1 + params.inflationRate, i);
+
+                // 1. 運用リターン
+                const yearlyReturn = isDeterministic ? params.returnMean : randomNormal(params.returnMean, params.returnStdDev);
+                let portfolioTotal = p + g;
+                portfolioTotal *= (1 + yearlyReturn);
+                
+                if (portfolioTotal > p) {
+                    g = portfolioTotal - p;
+                } else {
+                    g = 0; p = portfolioTotal;
+                }
+
+                if (portfolioTotal > maxPortfolioValue) {
+                    maxPortfolioValue = portfolioTotal;
+                }
+
+                const drawdown = maxPortfolioValue > 0 ? (maxPortfolioValue - portfolioTotal) / maxPortfolioValue : 0;
+                
+                // 2. キャッシュフロー精算 (生活費 + 特別支出を引く)
+                const netCashFlow = yearIncome - currentExpense - currentSpecialExpense;
+
+                if (params.useWithdrawalRule) {
+                    if (drawdown >= params.drawdownThreshold / 100) {
+                        isCrashMode = true;
+                    }
+
+                    const targetCash = currentExpense * params.cashBufferYears;
+                    
+                    if (isCrashMode) {
+                        const neededNet = Math.max(0, targetCash - cash);
+                        const profitRatio = (portfolioTotal > p) ? (g / portfolioTotal) : 0;
+                        const neededGross = neededNet / (1 - profitRatio * params.taxRate);
+                        if (portfolioTotal - neededGross >= maxPortfolioValue) {
+                            isCrashMode = false;
+                        }
+                    }
+
+                    if (netCashFlow > 0) {
+                        cash += netCashFlow;
+                    } else {
+                        cash += netCashFlow;
+                        if (cash < 0) {
+                            const shortfallNet = -cash;
+                            cash = 0;
+                            const wResult = withdrawNetFromPortfolio(p, g, shortfallNet, params.taxRate);
+                            p = wResult.p; g = wResult.g;
+                            portfolioTotal = p + g;
+                            maxPortfolioValue -= wResult.grossWithdrawn;
+                            if(maxPortfolioValue < 0) maxPortfolioValue = 0;
+                        }
+                    }
+
+                    if (cash < targetCash) {
+                        let availableGross = 0;
+                        if (isCrashMode) {
+                            availableGross = Math.max(0, portfolioTotal - maxPortfolioValue);
+                        } else {
+                            availableGross = portfolioTotal;
+                        }
+
+                        if (availableGross > 0) {
+                            const neededNet = targetCash - cash;
+                            const profitRatio = (portfolioTotal > p) ? (g / portfolioTotal) : 0;
+                            const neededGross = neededNet / (1 - profitRatio * params.taxRate);
+                            
+                            const actualGross = Math.min(neededGross, availableGross);
+                            
+                            const wResult = withdrawGrossFromPortfolio(p, g, actualGross, params.taxRate);
+                            p = wResult.p; g = wResult.g;
+                            portfolioTotal = p + g;
+                            cash += wResult.withdrawnNet;
+                            
+                            maxPortfolioValue -= actualGross;
+                            if(maxPortfolioValue < 0) maxPortfolioValue = 0;
+                        }
+                    } else if (cash > targetCash) {
+                        const excessCash = cash - targetCash;
+                        cash = targetCash;
+                        p += excessCash;
+                        portfolioTotal += excessCash;
+                        maxPortfolioValue += excessCash; 
+                    }
+
+                } else {
+                    if (netCashFlow > 0) {
+                        p += netCashFlow;
+                        portfolioTotal += netCashFlow;
+                    } else {
+                        const shortfallNet = -netCashFlow;
+                        const wResult = withdrawNetFromPortfolio(p, g, shortfallNet, params.taxRate);
+                        p = wResult.p; g = wResult.g;
+                        portfolioTotal = p + g;
+                    }
+                    cash = 0;
+                }
+
+                currentExpense *= (1 + params.inflationRate);
+                
+                path.push({
+                    year: i, age: age,
+                    principal: p, gains: g, cash: cash,
+                    totalAssets: portfolioTotal + cash
+                });
+            }
+            return path;
+        };
+
+        // --- UIコンポーネント ---
+        const SliderInput = ({ label, value, min, max, step, unit, onChange, description, disabled = false }) => {
+            const numValue = Number(value) || 0;
+            const percentage = ((numValue - min) / (max - min)) * 100;
+            
+            return (
+                <div className="mb-3">
+                    <div className="flex justify-between items-end mb-1">
+                        <label className={`text-sm ${disabled ? 'text-slate-500' : 'text-app-textSub'}`}>{label}</label>
+                        <div className="flex items-center justify-end">
+                            <input
+                                type="number"
+                                value={value}
+                                onChange={(e) => !disabled && onChange(e.target.value)}
+                                disabled={disabled}
+                                className={`bg-transparent text-right text-lg font-bold w-24 border-b border-transparent transition-colors px-1 ${
+                                    disabled ? 'text-slate-500 cursor-not-allowed' : 'text-white hover:border-app-border focus:border-app-teal focus:outline-none'
+                                }`}
+                            />
+                            <span className={`text-sm ml-1 ${disabled ? 'text-slate-500' : 'text-app-textSub'}`}>{unit}</span>
+                        </div>
+                    </div>
+                    <input
+                        type="range"
+                        min={min} max={max} step={step}
+                        value={numValue}
+                        onChange={(e) => !disabled && onChange(e.target.value)}
+                        disabled={disabled}
+                        className="slider-progress"
+                        style={{ '--value': `${percentage}%` }}
+                    />
+                    {description && <p className="text-xs text-slate-500 mt-1">{description}</p>}
+                </div>
+            );
+        };
+
+        const ToggleSwitch = ({ label, checked, onChange, description }) => (
+            <div className="mb-3">
+                <div className="flex justify-between items-center mb-1">
+                    <label className="text-sm text-app-textSub">{label}</label>
+                    <button
+                        type="button"
+                        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${checked ? 'bg-app-teal' : 'bg-slate-600'}`}
+                        onClick={() => onChange(!checked)}
+                    >
+                        <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${checked ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                </div>
+                {description && <p className="text-xs text-slate-500 mt-1">{description}</p>}
+            </div>
+        );
+
+        const StatCard = ({ title, value, subtext, valueColor = "text-app-yellow", subtextColor = "text-app-textSub", children }) => (
+            <div className="bg-app-panel border border-app-border rounded-xl p-3 flex flex-col justify-between">
+                <h3 className="text-sm text-app-textSub mb-2">{title}</h3>
+                <div>
+                    <div className={`text-2xl font-bold mb-1 ${valueColor}`}>{value}</div>
+                    <div className={`text-xs ${subtextColor}`}>{subtext}</div>
+                </div>
+                {children && <div className="mt-3 pt-3 border-t border-app-border">{children}</div>}
+            </div>
+        );
+
+        // StatCard内に収める小型スライダー（基準値をその場で調整できるようにする）
+        const InlineSlider = ({ label, value, min, max, step, unit, onChange }) => {
+            const numValue = Number(value) || 0;
+            const percentage = ((numValue - min) / (max - min)) * 100;
+            return (
+                <div>
+                    <div className="flex justify-between items-baseline mb-1">
+                        <label className="text-xs text-app-textSub">{label}</label>
+                        <span className="text-sm font-bold text-white">{numValue}{unit}</span>
+                    </div>
+                    <input
+                        type="range"
+                        min={min} max={max} step={step}
+                        value={numValue}
+                        onChange={(e) => onChange(e.target.value)}
+                        className="slider-progress"
+                        style={{ '--value': `${percentage}%` }}
+                    />
+                </div>
+            );
+        };
+
+        const CustomTooltip = ({ active, payload, label }) => {
+            if (active && payload && payload.length) {
+                const p90 = payload.find(p => p.dataKey === 'val75_90')?.payload.p90 || 0;
+                const p75 = payload.find(p => p.dataKey === 'val25_75')?.payload.p75 || 0;
+                const p50 = payload.find(p => p.dataKey === 'p50')?.value || 0;
+                const p25 = payload.find(p => p.dataKey === 'val10_25')?.payload.p25 || 0;
+                const p10 = payload.find(p => p.dataKey === 'val10')?.payload.p10 || 0;
+                const yearOffset = payload[0].payload.year;
+
+                return (
+                    <div className="bg-slate-800 border border-slate-600 p-3 rounded shadow-lg text-sm z-50">
+                        <p className="font-bold text-white mb-2">{label}歳 <span className="text-slate-400 font-normal">({yearOffset}年目)</span></p>
+                        <p className="text-teal-200">Top 10% : {formatCurrency(p90)}</p>
+                        <p className="text-teal-300">Top 25% : {formatCurrency(p75)}</p>
+                        <p className="text-teal-400 font-bold">中央値 : {formatCurrency(p50)}</p>
+                        <p className="text-teal-600">Bottom 25% : {formatCurrency(p25)}</p>
+                        <p className="text-teal-700">Bottom 10% : {formatCurrency(p10)}</p>
+                    </div>
+                );
+            }
+            return null;
+        };
+
+        const CustomBarTooltip = ({ active, payload, label }) => {
+            if (active && payload && payload.length) {
+                const pData = payload.find(p => p.dataKey === 'principal');
+                const gData = payload.find(p => p.dataKey === 'gains');
+                const cData = payload.find(p => p.dataKey === 'cash');
+                const yearOffset = pData?.payload?.year || 0;
+                const total = (pData?.value || 0) + (gData?.value || 0) + (cData?.value || 0);
+
+                return (
+                    <div className="bg-slate-800 border border-slate-600 p-3 rounded shadow-lg text-sm z-50">
+                        <p className="font-bold text-white mb-2">{label}歳 <span className="text-slate-400 font-normal">({yearOffset}年目)</span></p>
+                        <p className="text-white font-bold mb-1 border-b border-slate-600 pb-1">総資産 : {formatCurrency(total)}</p>
+                        <p className="text-app-green">運用利益 : {formatCurrency(gData?.value || 0)}</p>
+                        <p className="text-app-blue">投資元本 : {formatCurrency(pData?.value || 0)}</p>
+                        <p className="text-app-yellow">現金 : {formatCurrency(cData?.value || 0)}</p>
+                    </div>
+                );
+            }
+            return null;
+        };
+
+        // --- 自動保存(localStorage)ユーティリティ ---
+        const STORAGE_KEY = 'monteCarloDashboard_settings_v1';
+
+        const loadSavedSettings = () => {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return null;
+                return JSON.parse(raw);
+            } catch (e) {
+                console.warn('保存された設定の読み込みに失敗しました:', e);
+                return null;
+            }
+        };
+
+        // スクリプト読み込み時に一度だけ取得（初期値として利用）
+        const savedSettingsAtLoad = loadSavedSettings();
+
+        // --- メインアプリケーション ---
+        const App = () => {
+            const s = savedSettingsAtLoad; // 保存された設定（無ければnull）
+
+            const [currentAge, setCurrentAge] = useState(s?.currentAge ?? 36);
+            const [currentCash, setCurrentCash] = useState(s?.currentCash ?? 1500);
+            const [currentPrincipal, setCurrentPrincipal] = useState(s?.currentPrincipal ?? 7200);
+            const [currentGains, setCurrentGains] = useState(s?.currentGains ?? 0);
+            const [annualExpenses, setAnnualExpenses] = useState(s?.annualExpenses ?? 300);
+            const [years, setYears] = useState(s?.years ?? 50);
+            const [simCount, setSimCount] = useState(s?.simCount ?? 2500);
+
+            const [useWithdrawalRule, setUseWithdrawalRule] = useState(s?.useWithdrawalRule ?? true);
+            const [autoOptimize, setAutoOptimize] = useState(s?.autoOptimize ?? false);
+            const [cashBufferYears, setCashBufferYears] = useState(s?.cashBufferYears ?? 5);
+            const [drawdownThreshold, setDrawdownThreshold] = useState(s?.drawdownThreshold ?? 30);
+
+            const [incomes, setIncomes] = useState(s?.incomes ?? [
+                { id: 1, amount: 0, startAge: 50, endAge: 65, label: "収入1 (給与・副業等)" },
+                { id: 2, amount: 150, startAge: 65, endAge: 90, label: "収入2 (公的年金等)" },
+                { id: 3, amount: 0, startAge: 90, endAge: 100, label: "収入3 (その他)" },
+            ]);
+
+            // 新機能：特別支出(ライフイベント)
+            const [specialExpenses, setSpecialExpenses] = useState(s?.specialExpenses ?? [
+                { id: 1, age: 50, amount: 400, label: "車の買い替え等" },
+                { id: 2, age: 65, amount: 600, label: "住宅リフォーム" },
+            ]);
+
+            const [expectedReturn, setExpectedReturn] = useState(s?.expectedReturn ?? 10.0);
+            const [stdDev, setStdDev] = useState(s?.stdDev ?? 22.0);
+            const [inflation, setInflation] = useState(s?.inflation ?? 2.0);
+            const [taxRate, setTaxRate] = useState(s?.taxRate ?? 20.315);
+
+            // 「安全な生活費」の基準となる成功率、「ワーストケース」の基準となる下位パーセンタイル（それぞれスライダーで調整可能）
+            const [safeExpenseConfidence, setSafeExpenseConfidence] = useState(s?.safeExpenseConfidence ?? 95);
+            const [worstCasePercentile, setWorstCasePercentile] = useState(s?.worstCasePercentile ?? 10);
+
+            const [isCalculating, setIsCalculating] = useState(false);
+            const [results, setResults] = useState(null);
+            const [saveStatus, setSaveStatus] = useState(s ? '前回の設定を復元しました' : '');
+
+            const updateIncome = useCallback((id, field, value) => {
+                setIncomes(prev => prev.map(inc => inc.id === id ? { ...inc, [field]: value } : inc));
+            }, []);
+
+            const updateSpecialExpense = useCallback((id, field, value) => {
+                setSpecialExpenses(prev => prev.map(exp => exp.id === id ? { ...exp, [field]: value } : exp));
+            }, []);
+
+            const runFullSimulation = useCallback(() => {
+                setIsCalculating(true);
+
+                setTimeout(() => {
+                    const TOTAL_SIM_COUNT = Number(simCount) || 2500;
+                    
+                    let currentCashBuffer = Number(cashBufferYears) || 0;
+                    let currentDrawdown = Number(drawdownThreshold) || 0;
+
+                    const baseParams = {
+                        initialCash: Number(currentCash) || 0,
+                        initialPrincipal: Number(currentPrincipal) || 0,
+                        initialGains: Number(currentGains) || 0,
+                        annualExpenses: Number(annualExpenses) || 0,
+                        useWithdrawalRule: useWithdrawalRule,
+                        cashBufferYears: currentCashBuffer,
+                        drawdownThreshold: currentDrawdown,
+                        incomes: incomes.map(inc => ({
+                            ...inc,
+                            amount: Number(inc.amount) || 0,
+                            startAge: Number(inc.startAge) || 0,
+                            endAge: Number(inc.endAge) || 0
+                        })),
+                        specialExpenses: specialExpenses.map(exp => ({
+                            ...exp,
+                            amount: Number(exp.amount) || 0,
+                            age: Number(exp.age) || 0
+                        })),
+                        currentAge: Number(currentAge) || 0,
+                        years: Number(years) || 0,
+                        returnMean: (Number(expectedReturn) || 0) / 100,
+                        returnStdDev: (Number(stdDev) || 0) / 100,
+                        inflationRate: (Number(inflation) || 0) / 100,
+                        taxRate: (Number(taxRate) || 0) / 100
+                    };
+
+                    // --- 1. 最適なルールの自動探索 ---
+                    if (useWithdrawalRule && autoOptimize) {
+                        const cashBufferCandidates = [0, 1, 2, 3, 5, 7];
+                        const drawdownCandidates = [10, 20, 30, 40, 50];
+                        let bestRate = -1;
+                        let bestCb = currentCashBuffer;
+                        let bestDd = currentDrawdown;
+                        
+                        const OPTIMIZE_SIM = Math.min(TOTAL_SIM_COUNT, 500); 
+                        
+                        for (const cb of cashBufferCandidates) {
+                            for (const dd of drawdownCandidates) {
+                                const testParams = { ...baseParams, cashBufferYears: cb, drawdownThreshold: dd };
+                                let successCount = 0;
+                                for (let i = 0; i < OPTIMIZE_SIM; i++) {
+                                    const pathObj = runSimulationPass(testParams, false);
+                                    if (pathObj[pathObj.length - 1].totalAssets > 0) successCount++;
+                                }
+                                const rate = successCount / OPTIMIZE_SIM;
+                                
+                                if (rate > bestRate) {
+                                    bestRate = rate;
+                                    bestCb = cb;
+                                    bestDd = dd;
+                                } else if (rate === bestRate) {
+                                    if (cb < bestCb) {
+                                        bestCb = cb;
+                                        bestDd = dd;
+                                    }
+                                }
+                            }
+                        }
+                        setCashBufferYears(bestCb);
+                        setDrawdownThreshold(bestDd);
+                        baseParams.cashBufferYears = bestCb;
+                        baseParams.drawdownThreshold = bestDd;
+                    }
+
+                    // --- 2. 本番のモンテカルロ計算 ---
+                    let successCount = 0;
+                    const allPaths = [];
+                    for (let i = 0; i < TOTAL_SIM_COUNT; i++) {
+                        const pathObj = runSimulationPass(baseParams, false);
+                        const pathValues = pathObj.map(p => p.totalAssets);
+                        allPaths.push(pathValues);
+                        if (pathValues[pathValues.length - 1] > 0) successCount++;
+                    }
+                    const currentSuccessRate = (successCount / TOTAL_SIM_COUNT) * 100;
+
+                    // --- 3. 限界の安全な生活費の逆算 (指定した成功率ラインで逆算) ---
+                    const targetConfidence = (Number(safeExpenseConfidence) || 95) / 100;
+                    let safeExpense = 0;
+                    let low = 0;
+                    // 上限は総資産の15%程度を目安に
+                    let high = (baseParams.initialCash + baseParams.initialPrincipal + baseParams.initialGains) * 0.15; 
+                    if (high > 3000) high = 3000;
+                    const SEARCH_SIM = 300; // 逆算用の軽量シミュレーション
+                    for (let step = 0; step < 8; step++) {
+                        const mid = (low + high) / 2;
+                        const testParams = { ...baseParams, annualExpenses: mid };
+                        let sc = 0;
+                        for (let i = 0; i < SEARCH_SIM; i++) {
+                            const pathObj = runSimulationPass(testParams, false);
+                            if (pathObj[pathObj.length - 1].totalAssets > 0) sc++;
+                        }
+                        if ((sc / SEARCH_SIM) >= targetConfidence) {
+                            safeExpense = mid;
+                            low = mid; // もっと使えるかも
+                        } else {
+                            high = mid; // 使いすぎ
+                        }
+                    }
+                    safeExpense = Math.floor(safeExpense);
+
+                    // --- 4. チャートデータの生成 ---
+                    const worstCaseRatio = (Number(worstCasePercentile) || 10) / 100;
+                    const chartData = [];
+                    for (let y = 0; y <= baseParams.years; y++) {
+                        const valuesAtYear = allPaths.map(path => path[y]).sort((a, b) => a - b);
+                        
+                        const p10 = valuesAtYear[Math.floor(TOTAL_SIM_COUNT * 0.1)];
+                        const p25 = valuesAtYear[Math.floor(TOTAL_SIM_COUNT * 0.25)];
+                        const p50 = valuesAtYear[Math.floor(TOTAL_SIM_COUNT * 0.5)];
+                        const p75 = valuesAtYear[Math.floor(TOTAL_SIM_COUNT * 0.75)];
+                        const p90 = valuesAtYear[Math.floor(TOTAL_SIM_COUNT * 0.9)];
+                        // ワーストケース判定用：指定パーセンタイルの資産額（10/25/50/75/90%とは別に、スライダーで自由指定）
+                        const pWorst = valuesAtYear[Math.min(TOTAL_SIM_COUNT - 1, Math.floor(TOTAL_SIM_COUNT * worstCaseRatio))];
+
+                        const firstPositiveIndex = valuesAtYear.findIndex(v => v > 0);
+                        const successCountAtYear = firstPositiveIndex === -1 ? 0 : TOTAL_SIM_COUNT - firstPositiveIndex;
+                        const successRateAtYear = (successCountAtYear / TOTAL_SIM_COUNT) * 100;
+
+                        chartData.push({
+                            year: y,
+                            age: baseParams.currentAge + y,
+                            p10, p25, p50, p75, p90, pWorst,
+                            val10: p10,
+                            val10_25: p25 - p10,
+                            val25_75: p75 - p25,
+                            val75_90: p90 - p75,
+                            successRate: successRateAtYear
+                        });
+                    }
+
+                    // --- 5. ワーストケース(下位指定%)の枯渇年齢を取得 ---
+                    const worstPoint = chartData.find(d => d.pWorst <= 0);
+                    const worstDepletionAge = worstPoint ? worstPoint.age : null;
+
+                    // --- 6. 確定リターンベースのパス計算 (棒グラフ用) ---
+                    const deterministicData = runSimulationPass(baseParams, true);
+
+                    setResults({
+                        currentSuccessRate: currentSuccessRate,
+                        chartData: chartData,
+                        deterministicData: deterministicData,
+                        safeExpense: safeExpense,
+                        worstDepletionAge: worstDepletionAge
+                    });
+
+                    setIsCalculating(false);
+                }, 10);
+            }, [currentCash, currentPrincipal, currentGains, annualExpenses, useWithdrawalRule, autoOptimize, cashBufferYears, drawdownThreshold, incomes, specialExpenses, currentAge, years, expectedReturn, stdDev, inflation, taxRate, simCount, safeExpenseConfidence, worstCasePercentile]);
+
+            useEffect(() => {
+                runFullSimulation();
+                // eslint-disable-next-line react-hooks/exhaustive-deps
+            }, []);
+
+            // --- 入力内容の自動保存 (localStorage) ---
+            useEffect(() => {
+                const timer = setTimeout(() => {
+                    try {
+                        const dataToSave = {
+                            currentAge, currentCash, currentPrincipal, currentGains,
+                            annualExpenses, years, simCount,
+                            useWithdrawalRule, autoOptimize, cashBufferYears, drawdownThreshold,
+                            incomes, specialExpenses,
+                            expectedReturn, stdDev, inflation, taxRate,
+                            safeExpenseConfidence, worstCasePercentile
+                        };
+                        localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+                        setSaveStatus('自動保存済み');
+                    } catch (e) {
+                        console.warn('設定の自動保存に失敗しました:', e);
+                        setSaveStatus('自動保存に失敗しました（ブラウザの設定をご確認ください）');
+                    }
+                }, 500); // スライダー操作中に毎回書き込まないよう少し待つ
+                return () => clearTimeout(timer);
+            }, [currentAge, currentCash, currentPrincipal, currentGains, annualExpenses, years, simCount,
+                useWithdrawalRule, autoOptimize, cashBufferYears, drawdownThreshold, incomes, specialExpenses,
+                expectedReturn, stdDev, inflation, taxRate, safeExpenseConfidence, worstCasePercentile]);
+
+            const resetToDefault = useCallback(() => {
+                if (window.confirm('保存されている入力内容を削除して初期値に戻します。よろしいですか？')) {
+                    try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* noop */ }
+                    window.location.reload();
+                }
+            }, []);
+
+            const totalCurrentAssets = (Number(currentCash) || 0) + (Number(currentPrincipal) || 0) + (Number(currentGains) || 0);
+
+            return (
+                <div className="min-h-screen bg-app-bg p-3 md:p-4 font-sans safe-bottom">
+                    <div className="max-w-7xl mx-auto mb-4">
+                        <h1 className="text-lg md:text-2xl font-bold text-app-textMain">資産運用モンテカルロシミュレーション</h1>
+                        <p className="text-xs md:text-sm text-app-textSub mt-1">入力した条件はこの端末のブラウザに自動保存されます。次回このページを開いたときも同じ設定から始められます。</p>
+                    </div>
+                    <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-4">
+                        
+                        {/* 左側：入力パネル */}
+                        <div className="lg:col-span-4 space-y-4">
+
+                            <div className="run-btn-sticky md:static space-y-1 bg-app-bg/95 backdrop-blur-sm pb-2 -mx-3 px-3 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none">
+                                <button 
+                                    onClick={runFullSimulation}
+                                    disabled={isCalculating}
+                                    className={`w-full py-3 rounded-xl font-bold text-lg transition-all shadow-lg ${
+                                        isCalculating 
+                                        ? 'bg-slate-600 text-slate-300 cursor-not-allowed' 
+                                        : 'bg-app-teal text-slate-900 hover:bg-teal-300 hover:shadow-teal-500/20'
+                                    }`}
+                                >
+                                    {isCalculating ? '計算中...' : 'シミュレーションを実行する'}
+                                </button>
+                                {saveStatus && (
+                                    <div className="flex items-center justify-between px-1">
+                                        <p className="text-xs text-app-textSub flex items-center">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-app-teal inline-block mr-1.5"></span>
+                                            {saveStatus}
+                                        </p>
+                                        <button
+                                            onClick={resetToDefault}
+                                            className="text-xs text-slate-500 hover:text-app-red underline"
+                                        >
+                                            設定をリセット
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 01 基本設定 */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg">
+                                <h2 className="text-app-textMain font-bold mb-4 flex items-center">
+                                    <span className="text-app-teal mr-2">01</span> 基本設定
+                                </h2>
+                                
+                                <SliderInput 
+                                    label="現在の年齢" 
+                                    value={currentAge} min={0} max={100} step={1} unit="歳" 
+                                    onChange={setCurrentAge} 
+                                />
+                                
+                                <div className="mb-4 p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                                    <SliderInput 
+                                        label="現在の現金" 
+                                        value={currentCash} min={0} max={30000} step={100} unit="万円" 
+                                        onChange={setCurrentCash} 
+                                    />
+                                    <SliderInput 
+                                        label="現在の投資元本" 
+                                        value={currentPrincipal} min={0} max={30000} step={100} unit="万円" 
+                                        onChange={setCurrentPrincipal} 
+                                    />
+                                    <SliderInput 
+                                        label="現在の運用利益 (含み益)" 
+                                        value={currentGains} min={0} max={30000} step={100} unit="万円" 
+                                        onChange={setCurrentGains} 
+                                    />
+                                    <div className="mt-2 pt-3 border-t border-slate-700/80 flex justify-between items-center">
+                                        <span className="text-app-textSub text-sm font-medium">現在の総資産額</span>
+                                        <span className="text-xl font-bold text-white">
+                                            {formatCurrency(totalCurrentAssets)}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <SliderInput 
+                                    label="年間生活費" 
+                                    value={annualExpenses} min={0} max={2000} step={10} unit="万円/年" 
+                                    onChange={setAnnualExpenses} 
+                                />
+                                <SliderInput 
+                                    label="シミュレーション期間" 
+                                    value={years} min={10} max={100} step={1} unit="年" 
+                                    onChange={setYears} 
+                                    description={`現在${Number(currentAge) || 0}歳から${(Number(currentAge) || 0) + (Number(years) || 0)}歳まで計算します`}
+                                />
+                                <SliderInput 
+                                    label="シミュレーション試行回数" 
+                                    value={simCount} min={100} max={100000} step={100} unit="回" 
+                                    onChange={setSimCount} 
+                                />
+                            </div>
+
+                            {/* 02 取り崩しルールの設定 */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg">
+                                <h2 className="text-app-textMain font-bold mb-4 flex items-center">
+                                    <span className="text-app-teal mr-2">02</span> 取り崩しルールの設定
+                                </h2>
+                                
+                                <ToggleSwitch 
+                                    label="ルールを適用する" 
+                                    checked={useWithdrawalRule} 
+                                    onChange={setUseWithdrawalRule} 
+                                    description="OFFにすると、現金も全て投資に回すシンプルな計算になります"
+                                />
+
+                                {useWithdrawalRule && (
+                                    <div className="pt-3 border-t border-slate-700/50">
+                                        <ToggleSwitch 
+                                            label="最適な数値を自動探索する" 
+                                            checked={autoOptimize} 
+                                            onChange={setAutoOptimize} 
+                                            description="実行時、資産枯渇の可能性が最も低くなる値を自動計算して適用します"
+                                        />
+                                        <SliderInput 
+                                            label="現金を生活費の何年分持つか" 
+                                            value={cashBufferYears} min={0} max={30} step={1} unit="年分" 
+                                            onChange={setCashBufferYears} 
+                                            disabled={autoOptimize}
+                                            description={autoOptimize ? "自動探索ONのため実行時に上書きされます" : "不足時は運用益から補充、余剰は投資へ回します"}
+                                        />
+                                        <SliderInput 
+                                            label="暴落判定 (下落率)" 
+                                            value={drawdownThreshold} min={0} max={70} step={1} unit="%" 
+                                            onChange={setDrawdownThreshold} 
+                                            disabled={autoOptimize}
+                                            description={autoOptimize ? "自動探索ONのため実行時に上書きされます" : "最高値から指定%下落した場合、売却をストップし現金のみを使用します"}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 03 年間収入 */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg">
+                                <h2 className="text-app-textMain font-bold mb-4 flex items-center">
+                                    <span className="text-app-teal mr-2">03</span> 年間収入
+                                </h2>
+                                
+                                {incomes.map((inc) => (
+                                    <div key={inc.id} className="mb-3 last:mb-0 p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                                        <SliderInput 
+                                            label={inc.label} 
+                                            value={inc.amount} min={0} max={1000} step={10} unit="万円/年" 
+                                            onChange={(val) => updateIncome(inc.id, 'amount', val)} 
+                                        />
+                                        <div className="flex items-center justify-between mt-1 text-sm">
+                                            <span className="text-app-textSub">受給期間:</span>
+                                            <div className="flex items-center gap-2">
+                                                <input 
+                                                    type="number" 
+                                                    className="bg-[#0B1121] border border-app-border text-white rounded px-2 py-1 w-16 text-right focus:outline-none focus:border-app-teal" 
+                                                    value={inc.startAge} 
+                                                    onChange={(e) => updateIncome(inc.id, 'startAge', e.target.value)} 
+                                                />
+                                                <span className="text-app-textSub">歳 〜</span>
+                                                <input 
+                                                    type="number" 
+                                                    className="bg-[#0B1121] border border-app-border text-white rounded px-2 py-1 w-16 text-right focus:outline-none focus:border-app-teal" 
+                                                    value={inc.endAge} 
+                                                    onChange={(e) => updateIncome(inc.id, 'endAge', e.target.value)} 
+                                                />
+                                                <span className="text-app-textSub">歳</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* 04 ライフイベント */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg">
+                                <h2 className="text-app-textMain font-bold mb-4 flex items-center">
+                                    <span className="text-app-teal mr-2">04</span> ライフイベント (特別支出)
+                                </h2>
+                                <p className="text-xs text-app-textSub mb-4">特定の年齢で発生する一時的な大きな支出を設定します。設定した金額には年数に応じたインフレ率が加味されて引かれます。</p>
+                                
+                                {specialExpenses.map((exp) => (
+                                    <div key={exp.id} className="mb-3 last:mb-0 p-3 bg-slate-800/30 rounded-lg border border-slate-700/50">
+                                        <SliderInput 
+                                            label={exp.label} 
+                                            value={exp.amount} min={0} max={2000} step={10} unit="万円" 
+                                            onChange={(val) => updateSpecialExpense(exp.id, 'amount', val)} 
+                                        />
+                                        <div className="flex items-center justify-between mt-1 text-sm">
+                                            <span className="text-app-textSub">発生年齢:</span>
+                                            <div className="flex items-center gap-2">
+                                                <input 
+                                                    type="number" 
+                                                    className="bg-[#0B1121] border border-app-border text-white rounded px-2 py-1 w-20 text-right focus:outline-none focus:border-app-teal" 
+                                                    value={exp.age} 
+                                                    onChange={(e) => updateSpecialExpense(exp.id, 'age', e.target.value)} 
+                                                />
+                                                <span className="text-app-textSub">歳</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+
+                            {/* 05 運用の前提 */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg">
+                                <h2 className="text-app-textMain font-bold mb-4 flex items-center">
+                                    <span className="text-app-teal mr-2">05</span> 運用の前提
+                                </h2>
+                                
+                                <SliderInput 
+                                    label="期待リターン(年率)" 
+                                    value={expectedReturn} min={0} max={30} step={0.1} unit="%" 
+                                    onChange={setExpectedReturn} 
+                                />
+                                <SliderInput 
+                                    label="リターンの標準偏差(年率)" 
+                                    value={stdDev} min={0} max={50} step={0.1} unit="%" 
+                                    onChange={setStdDev} 
+                                />
+                                <SliderInput 
+                                    label="インフレ率(生活費上昇率)" 
+                                    value={inflation} min={0} max={10} step={0.1} unit="%" 
+                                    onChange={setInflation} 
+                                />
+                                <SliderInput 
+                                    label="運用益への税率" 
+                                    value={taxRate} min={0} max={55} step={0.001} unit="%" 
+                                    onChange={setTaxRate} 
+                                    description="新NISAなどで全額非課税とする場合は0%に設定"
+                                />
+                            </div>
+
+                        </div>
+
+                        {/* 右側：結果表示パネル */}
+                        <div className="lg:col-span-8 flex flex-col gap-4">
+                            
+                            {results && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <StatCard 
+                                        title="現在の総資産額" 
+                                        value={formatCurrency(totalCurrentAssets)}
+                                        valueColor="text-white"
+                                        subtext="現金・投資元本・運用利益の合計" 
+                                    />
+                                    <StatCard 
+                                        title="資産が枯渇しない確率" 
+                                        value={`${results.currentSuccessRate.toFixed(1)}%`} 
+                                        valueColor={results.currentSuccessRate >= 95 ? "text-app-teal" : results.currentSuccessRate >= 70 ? "text-app-yellow" : "text-app-red"}
+                                        subtext={`${years}年間、生活費を賄い続けられる確率`} 
+                                    />
+                                    <StatCard 
+                                        title={`安全な生活費の目安 (成功率${safeExpenseConfidence}%基準)`} 
+                                        value={results.safeExpense > 0 ? `${results.safeExpense}万円/年` : '算出不可'} 
+                                        valueColor="text-app-teal"
+                                        subtext="現在の資産とルールで維持可能な年間生活費の上限" 
+                                    >
+                                        <InlineSlider 
+                                            label="基準とする成功率" 
+                                            value={safeExpenseConfidence} min={50} max={99} step={1} unit="%" 
+                                            onChange={setSafeExpenseConfidence} 
+                                        />
+                                        <p className="text-[11px] text-slate-500 mt-1">変更後は上の「シミュレーションを実行する」を押して反映してください</p>
+                                    </StatCard>
+                                    <StatCard 
+                                        title={`ワースト時(下位${worstCasePercentile}%)の資産枯渇年齢`} 
+                                        value={results.worstDepletionAge ? `${results.worstDepletionAge}歳` : '枯渇なし'} 
+                                        valueColor={results.worstDepletionAge ? "text-app-red" : "text-app-teal"}
+                                        subtext={`運悪くリターンが下位${worstCasePercentile}%のルートを辿った場合の寿命`} 
+                                    >
+                                        <InlineSlider 
+                                            label="ワーストケースとする下位%" 
+                                            value={worstCasePercentile} min={1} max={50} step={1} unit="%" 
+                                            onChange={setWorstCasePercentile} 
+                                        />
+                                        <p className="text-[11px] text-slate-500 mt-1">変更後は上の「シミュレーションを実行する」を押して反映してください</p>
+                                    </StatCard>
+                                </div>
+                            )}
+
+                            {/* 06 資産推移ファンチャート */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg flex-1 min-h-[350px]">
+                                <div className="flex flex-wrap justify-between items-center gap-y-1 gap-x-3 mb-4">
+                                    <h2 className="text-app-textMain font-bold flex items-center text-sm md:text-base">
+                                        <span className="text-app-teal mr-2">06</span> 資産推移ファンチャート (確率的)
+                                    </h2>
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-app-textSub">
+                                        <div className="flex items-center"><span className="w-3 h-3 bg-[#14b8a6] opacity-10 inline-block mr-1"></span>10〜90%帯</div>
+                                        <div className="flex items-center"><span className="w-3 h-3 bg-[#14b8a6] opacity-30 inline-block mr-1"></span>25〜75%帯</div>
+                                        <div className="flex items-center"><span className="w-3 h-0.5 bg-app-teal inline-block mr-1"></span>中央値</div>
+                                    </div>
+                                </div>
+                                
+                                {results && !isCalculating ? (
+                                    <div className="w-full h-[350px]">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={results.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#2e3a51" vertical={false} />
+                                                <XAxis dataKey="age" stroke="#94a3b8" tickFormatter={(val) => `${val}歳`} minTickGap={20} />
+                                                <YAxis stroke="#94a3b8" tickFormatter={(val) => formatCurrency(val)} width={80} domain={[0, 'auto']} allowDataOverflow={true} />
+                                                <Tooltip content={<CustomTooltip />} />
+                                                
+                                                <Area type="monotone" dataKey="val10" stackId="1" stroke="none" fill="transparent" isAnimationActive={false} />
+                                                <Area type="monotone" dataKey="val10_25" stackId="1" stroke="none" fill="#14b8a6" fillOpacity={0.1} isAnimationActive={false} />
+                                                <Area type="monotone" dataKey="val25_75" stackId="1" stroke="none" fill="#14b8a6" fillOpacity={0.25} isAnimationActive={false} />
+                                                <Area type="monotone" dataKey="val75_90" stackId="1" stroke="none" fill="#14b8a6" fillOpacity={0.1} isAnimationActive={false} />
+                                                
+                                                <Line type="monotone" dataKey="p50" stroke="#4fd1c5" strokeWidth={2} dot={false} isAnimationActive={false} />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                ) : (
+                                    <div className="w-full h-[350px] flex items-center justify-center text-app-textSub">計算中...</div>
+                                )}
+                            </div>
+
+                            {/* 07 成功率(%)の推移 */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg flex-1 min-h-[250px]">
+                                <div className="flex flex-wrap justify-between items-center gap-y-1 gap-x-3 mb-4">
+                                    <h2 className="text-app-textMain font-bold flex items-center text-sm md:text-base">
+                                        <span className="text-app-teal mr-2">07</span> 成功率(%)の推移
+                                    </h2>
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-app-textSub">
+                                        <div className="flex items-center"><span className="w-3 h-0.5 bg-red-400 inline-block mr-1"></span>成功率</div>
+                                    </div>
+                                </div>
+                                
+                                {results && !isCalculating ? (
+                                    <div className="w-full h-[250px]">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={results.chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#2e3a51" vertical={false} />
+                                                <XAxis dataKey="year" stroke="#94a3b8" tickFormatter={(val) => `${val}年`} minTickGap={20} />
+                                                <YAxis stroke="#94a3b8" tickFormatter={(val) => `${val}%`} width={50} domain={[0, 100]} allowDataOverflow={false} />
+                                                <Tooltip 
+                                                    content={({ active, payload, label }) => {
+                                                        if (active && payload && payload.length) {
+                                                            const rate = payload[0].value;
+                                                            const currentAgeData = payload[0].payload.age;
+                                                            return (
+                                                                <div className="bg-slate-800 border border-slate-600 p-3 rounded shadow-lg text-sm z-50">
+                                                                    <p className="font-bold text-white mb-2">経過 {label}年 <span className="text-slate-400 font-normal">({currentAgeData}歳)</span></p>
+                                                                    <p className="text-red-400 font-bold">成功率 : {rate.toFixed(1)}%</p>
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    }}
+                                                />
+                                                <Line type="monotone" dataKey="successRate" stroke="#f87171" strokeWidth={3} dot={{ r: 3, fill: '#0B1121', strokeWidth: 2, stroke: '#f87171' }} activeDot={{ r: 6, fill: '#f87171', stroke: '#0B1121' }} isAnimationActive={false} />
+                                            </ComposedChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                ) : (
+                                    <div className="w-full h-[250px] flex items-center justify-center text-app-textSub">計算中...</div>
+                                )}
+                            </div>
+
+                            {/* 08 確定推移 */}
+                            <div className="bg-app-panel border border-app-border rounded-xl p-4 shadow-lg flex-1 min-h-[350px]">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-app-textMain font-bold flex items-center">
+                                        <span className="text-app-teal mr-2">08</span> 確定推移 (毎年の期待リターン一定時)
+                                    </h2>
+                                </div>
+                                
+                                {results && !isCalculating ? (
+                                    <div className="w-full h-[350px]">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                            <BarChart data={results.deterministicData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#2e3a51" vertical={false} />
+                                                <XAxis dataKey="age" stroke="#94a3b8" tickFormatter={(val) => `${val}歳`} minTickGap={20} />
+                                                <YAxis stroke="#94a3b8" tickFormatter={(val) => formatCurrency(val)} width={80} />
+                                                <Tooltip content={<CustomBarTooltip />} cursor={{fill: '#2e3a51', opacity: 0.4}} />
+                                                <Legend wrapperStyle={{ paddingTop: '10px' }} />
+                                                {/* 積み上げの順番: 下から 現金 → 投資元本 → 運用利益 */}
+                                                <Bar dataKey="cash" stackId="a" fill="#fbbf24" name="現金" isAnimationActive={false} />
+                                                <Bar dataKey="principal" stackId="a" fill="#3b82f6" name="投資元本" isAnimationActive={false} />
+                                                <Bar dataKey="gains" stackId="a" fill="#22c55e" name="運用利益" isAnimationActive={false} />
+                                            </BarChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                ) : (
+                                    <div className="w-full h-[350px] flex items-center justify-center text-app-textSub">計算中...</div>
+                                )}
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
